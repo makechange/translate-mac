@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import Translation
 import AVFoundation
 
@@ -16,11 +17,11 @@ struct VisualEffectView: NSViewRepresentable {
         view.material = material
         view.blendingMode = blendingMode
         view.state = .active
-        
+
         view.wantsLayer = true
         view.layer?.cornerRadius = cornerRadius
         view.layer?.masksToBounds = true
-        
+
         return view
     }
     
@@ -38,43 +39,69 @@ class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     
     @Published var isSpeaking = false
     @Published var speakingTarget: String = ""  // "source" or "translation"
+    private let speechQueue = DispatchQueue(
+        label: "com.makechange.translateone.speech",
+        qos: .utility
+    )
     private let synthesizer = AVSpeechSynthesizer()
     
     override private init() {
         super.init()
-        synthesizer.delegate = self
+
+        // 在后台串行队列中预热语音引擎，避免首次朗读阻塞 UI。
+        speechQueue.async { [weak self] in
+            guard let self else { return }
+            self.synthesizer.delegate = self
+            _ = AVSpeechSynthesisVoice.speechVoices()
+        }
     }
-    
+
     func speak(text: String, languageCode: String, target: String) {
         if isSpeaking {
-            synthesizer.stopSpeaking(at: .immediate)
-            isSpeaking = false
-            speakingTarget = ""
+            stop()
             return
         }
         
-        let utterance = AVSpeechUtterance(string: text)
-        let voice = AVSpeechSynthesisVoice(language: languageCode)
-        utterance.voice = voice
-        synthesizer.speak(utterance)
+        // 先更新 UI，实际语音合成在专用队列中执行。
         isSpeaking = true
         speakingTarget = target
+
+        speechQueue.async { [weak self] in
+            guard let self else { return }
+            let utterance = AVSpeechUtterance(string: text)
+            utterance.voice = AVSpeechSynthesisVoice(language: languageCode)
+            self.synthesizer.speak(utterance)
+        }
     }
     
     func stop() {
-        synthesizer.stopSpeaking(at: .immediate)
         isSpeaking = false
         speakingTarget = ""
+
+        speechQueue.async { [weak self] in
+            self?.synthesizer.stopSpeaking(at: .immediate)
+        }
     }
     
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        isSpeaking = false
-        speakingTarget = ""
+        finishSpeaking()
     }
     
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        isSpeaking = false
-        speakingTarget = ""
+        finishSpeaking()
+    }
+
+    private func finishSpeaking() {
+        // AVFoundation 的回调线程不固定，统一回到主线程更新 SwiftUI 状态。
+        if Thread.isMainThread {
+            isSpeaking = false
+            speakingTarget = ""
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.isSpeaking = false
+                self?.speakingTarget = ""
+            }
+        }
     }
 }
 

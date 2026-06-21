@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import Translation
 
 enum Language: String, CaseIterable, Identifiable {

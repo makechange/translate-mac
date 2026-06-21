@@ -1,8 +1,11 @@
 # Build products
-TranslateOne
 TranslateOne.app/
 build/
 DerivedData/
+
+# Xcode user-specific state
+xcuserdata/
+*.xcuserstate
 
 # Temporary files
 *.iconset/
