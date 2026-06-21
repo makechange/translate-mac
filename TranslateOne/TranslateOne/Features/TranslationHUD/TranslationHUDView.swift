@@ -2,6 +2,7 @@ import SwiftUI
 import Combine
 import Translation
 import AVFoundation
+import NaturalLanguage
 
 extension Notification.Name {
     static let closeTranslationHUD = Notification.Name("closeTranslationHUD")
@@ -119,7 +120,6 @@ struct TranslationHUDView: View {
     @State private var configuration: TranslationSession.Configuration?
     @State private var isCopiedSource = false
     @State private var isCopiedTranslation = false
-    @State private var isFallbackAttempt = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -344,18 +344,9 @@ struct TranslationHUDView: View {
                 detectedSourceLanguage = response.sourceLanguage.maximalIdentifier
                 isTranslating = false
             } catch {
-                if settings.sourceLanguage == .auto && !isFallbackAttempt {
-                    print("TranslateOne: Auto-detection failed, falling back to English")
-                    isFallbackAttempt = true
-                    configuration = TranslationSession.Configuration(
-                        source: Locale.Language(identifier: "en-US"),
-                        target: settings.targetLanguage.localeLanguage
-                    )
-                } else {
-                    isTranslating = false
-                    translationError = "翻译失败: \(error.localizedDescription)"
-                    print("TranslateOne: translation failed: \(error)")
-                }
+                isTranslating = false
+                translationError = "翻译失败: \(error.localizedDescription)"
+                print("TranslateOne: translation failed: \(error)")
             }
         }
     }
@@ -382,11 +373,45 @@ struct TranslationHUDView: View {
     private func triggerTranslation() {
         guard !sourceText.isEmpty else { return }
         translatedText = ""
-        isFallbackAttempt = false
         configuration = TranslationSession.Configuration(
-            source: settings.sourceLanguage.localeLanguage,
+            source: resolvedSourceLanguage(),
             target: settings.targetLanguage.localeLanguage
         )
+    }
+
+    private func resolvedSourceLanguage() -> Locale.Language {
+        if let selectedLanguage = settings.sourceLanguage.localeLanguage {
+            detectedSourceLanguage = selectedLanguage.maximalIdentifier
+            return selectedLanguage
+        }
+
+        let fallbackLanguage = Locale.Language(identifier: "en-US")
+        let normalizedText = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isASCII = normalizedText.unicodeScalars.allSatisfy { $0.value < 128 }
+        let letterCount = normalizedText.unicodeScalars.filter {
+            CharacterSet.letters.contains($0)
+        }.count
+
+        // 极短的拉丁字母文本无法可靠区分语言，按英语处理更符合用户预期。
+        if isASCII && letterCount <= 3 {
+            detectedSourceLanguage = fallbackLanguage.maximalIdentifier
+            return fallbackLanguage
+        }
+
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(normalizedText)
+
+        if let result = recognizer.languageHypotheses(withMaximum: 1).first,
+           result.key != .undetermined,
+           result.value >= 0.35 {
+            let detectedLanguage = Locale.Language(identifier: result.key.rawValue)
+            detectedSourceLanguage = detectedLanguage.maximalIdentifier
+            return detectedLanguage
+        }
+
+        // 短词或低置信度文本无法识别时，直接使用英语，避免系统弹出语言选择窗口。
+        detectedSourceLanguage = fallbackLanguage.maximalIdentifier
+        return fallbackLanguage
     }
     
     private func copyText(_ text: String, flag: Binding<Bool>) {
